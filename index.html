@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Manufacturing SPC Monitoring System v3.2</title>
+    <title>Manufacturing SPC Monitoring System v4.0</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
     <style>
         * {
@@ -480,12 +480,22 @@
             border-radius: 3px;
             font-size: 12px;
         }
+
+        .status-yes {
+            color: #155724;
+            font-weight: bold;
+        }
+
+        .status-no {
+            color: #721c24;
+            font-weight: bold;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <header>
-            <div class="version">v3.2</div>
+            <div class="version">v4.0</div>
             <h1>Manufacturing SPC Monitoring System</h1>
             <p>Statistical Process Control & Equipment Monitoring</p>
         </header>
@@ -709,16 +719,6 @@
         </div>
     </div>
 
-    <div id="fault-modal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header" style="border-color: #f44336;">
-                <h3 style="color: #f44336;">⚠️ Process Out of Control!</h3>
-            </div>
-            <div id="fault-modal-body" style="margin-top: 15px; margin-bottom: 20px;"></div>
-            <button onclick="closeFaultModal()" style="width: 100%; background: #f44336;">Acknowledge</button>
-        </div>
-    </div>
-    
     <script>
         // Configuration - PASTE YOUR GOOGLE APPS SCRIPT URL HERE
         const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzkmTzohbjm7jRmWmgeU4Zrzp373qBJovncVA1jrK2K5glnVANUX4R6tUwl2vJSvijBVA/exec';
@@ -989,9 +989,6 @@
             }
         }
         
-        // ===================================================================
-        // ===== THIS IS THE MODIFIED FUNCTION WITH THE BUG FIX =====
-        // ===================================================================
         async function submitInspection(keepContext = false) {
             const form = document.getElementById('inspection-form');
             if (!form.checkValidity()) {
@@ -1023,6 +1020,7 @@
                 measurements: {},
                 notes: document.getElementById('notes').value,
                 timestamp: new Date().toISOString(),
+                count: 'YES', // Adds the "Count" property with a default of "YES"
                 history: [{ action: 'created', timestamp: new Date().toISOString() }]
             };
 
@@ -1063,44 +1061,6 @@
             saveData();
             await syncToCloud(inspection);
             
-            // --- FAULT CHECKING LOGIC ---
-            // This setTimeout ensures the check runs after the main thread is clear, fixing the timing bug.
-            setTimeout(() => {
-                const historyForPoint = inspections.filter(i =>
-                    i.line === inspection.line &&
-                    (i.downline || '') === (inspection.downline || '') &&
-                    i.machine === inspection.machine &&
-                    i.inspectionPoint === inspection.inspectionPoint
-                );
-
-                let allFaults = [];
-                const checkMeasurement = (label, path) => {
-                    const getValue = (obj, p) => p.split('.').reduce((o, key) => o?.[key], obj.measurements);
-                    const values = historyForPoint.map(i => getValue(i, path)).filter(v => v !== undefined && v !== null);
-                    
-                    if (values.length > 1) { // Only check if there's history
-                        const newFaults = getPointFaults(values);
-                        if (newFaults.length > 0) {
-                            newFaults.forEach(f => f.measurement = label);
-                            allFaults = allFaults.concat(newFaults);
-                        }
-                    }
-                };
-
-                if (inspection.measurements.temperature !== undefined) checkMeasurement('Temperature', 'temperature');
-                if (inspection.measurements.vibration?.x !== undefined) checkMeasurement('Vibration X', 'vibration.x');
-                if (inspection.measurements.vibration?.y !== undefined) checkMeasurement('Vibration Y', 'vibration.y');
-                if (inspection.measurements.vibration?.z !== undefined) checkMeasurement('Vibration Z', 'vibration.z');
-                if (inspection.measurements.tackRPM !== undefined) checkMeasurement('Tack RPM', 'tackRPM');
-                
-                if (allFaults.length > 0) {
-                    const faultModalBody = document.getElementById('fault-modal-body');
-                    faultModalBody.innerHTML = 'The new data point has caused the process to be out of control. Please acknowledge this alert and take the necessary corrective action.<br><br><strong>Detected Faults:</strong><ul>' +
-                        allFaults.map(f => `<li><strong>${f.measurement}</strong>: Violated ${f.type} (${f.description})</li>`).join('') + '</ul>';
-                    document.getElementById('fault-modal').classList.add('active');
-                }
-            }, 0); // A timeout of 0ms pushes this check to the end of the execution queue.
-
             let alertHtml = '<div class="alert alert-success">Inspection submitted successfully!</div>';
             document.getElementById('entry-alert').innerHTML = alertHtml;
             setTimeout(() => { document.getElementById('entry-alert').innerHTML = ''; }, 5000);
@@ -1277,13 +1237,16 @@
                        (!filterPoint || i.inspectionPoint === filterPoint);
             });
             
-            if (filtered.length === 0) {
-                container.innerHTML = '<p>No data available for the selected filters.</p>';
+            // Filter for data to be included in chart calculations
+            const chartData = filtered.filter(i => i.count && i.count.toUpperCase() === 'YES');
+
+            if (chartData.length === 0) {
+                container.innerHTML = '<p>No data available to build charts for the selected filters. Check if data entries are marked to be included in charts.</p>';
                 return;
             }
             
             const groups = {};
-            filtered.forEach(i => {
+            chartData.forEach(i => {
                 const key = `${i.line}${i.downline ? ' - ' + i.downline : ''} - ${i.machine} - ${i.inspectionPoint}`;
                 if (!groups[key]) groups[key] = [];
                 groups[key].push(i);
@@ -1479,10 +1442,8 @@
             document.getElementById('point-modal').classList.remove('active');
             currentPointId = null;
         }
-
-        function closeFaultModal() {
-            document.getElementById('fault-modal').classList.remove('active');
-        }
+        
+        // The closeFaultModal function has been removed.
         
         function saveAdditionalNotes() {
             const notes = document.getElementById('additional-notes').value.trim();
@@ -1532,7 +1493,6 @@
                             <th>Timestamp</th>
                             <th>Inspector</th>
                             <th>Line</th>
-                            <th>Downline</th>
                             <th>Machine</th>
                             <th>Point</th>
                             <th>Temp</th>
@@ -1540,6 +1500,7 @@
                             <th>Sounds</th>
                             <th>RPM</th>
                             <th>Notes</th>
+                            <th>In Chart</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -1547,7 +1508,6 @@
             
             sorted.forEach(i => {
                 const temp = i.measurements.temperature !== undefined ? i.measurements.temperature : '<span class="na-badge">N/A</span>';
-                
                 let vib = '';
                 if (i.measurements.vibration) {
                     const vx = i.measurements.vibration.x !== undefined ? i.measurements.vibration.x.toFixed(2) : '-';
@@ -1557,14 +1517,19 @@
                 } else {
                     vib = '<span class="na-badge">N/A</span>';
                 }
-                
                 const sounds = i.measurements.auditory && i.measurements.auditory.length > 0 
                     ? i.measurements.auditory.length + ' detected' 
                     : '<span class="na-badge">N/A</span>';
-                
                 const rpm = i.measurements.tackRPM !== undefined ? i.measurements.tackRPM : '<span class="na-badge">N/A</span>';
                 const downline = i.downline || '<span class="na-badge">N/A</span>';
                 const hasNotes = (i.notes && i.notes.trim() !== '') || (i.additionalNotes && i.additionalNotes.length > 0);
+                
+                let countStatus = '<span class="na-badge">N/A</span>';
+                if (i.count) {
+                    countStatus = i.count.toUpperCase() === 'YES' 
+                        ? `<span class="status-yes">${i.count}</span>` 
+                        : `<span class="status-no">${i.count}</span>`;
+                }
                 
                 tableHTML += `
                     <tr>
@@ -1579,6 +1544,7 @@
                         <td>${sounds}</td>
                         <td>${rpm}</td>
                         <td>${hasNotes ? '<strong>Yes</strong>' : '<span class="na-badge">No</span>'}</td>
+                        <td>${countStatus}</td>
                     </tr>
                 `;
             });

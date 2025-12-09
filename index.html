@@ -599,6 +599,44 @@
             transform: translateY(-2px);
             box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
         }
+        
+        .update-banner {
+            display: none;
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: linear-gradient(135deg, #4CAF50 0%, #45a049 100%);
+            color: white;
+            padding: 15px 30px;
+            border-radius: 10px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+            z-index: 3000;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            animation: slideDown 0.3s ease;
+        }
+        
+        .update-banner.show {
+            display: block;
+        }
+        
+        .update-banner:hover {
+            transform: translateX(-50%) translateY(-2px);
+            box-shadow: 0 6px 25px rgba(0,0,0,0.4);
+        }
+        
+        @keyframes slideDown {
+            from {
+                opacity: 0;
+                transform: translateX(-50%) translateY(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(-50%) translateY(0);
+            }
+        }
     </style>
 </head>
 <body>
@@ -864,20 +902,25 @@
         </div>
     </div>
     
+    <div id="update-banner" class="update-banner" onclick="applyUpdate()">
+        🎉 New version available! Click here to update.
+    </div>
+    
     <script>
         // Configuration - PASTE YOUR GOOGLE APPS SCRIPT URL HERE
         const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzkmTzohbjm7jRmWmgeU4Zrzp373qBJovncVA1jrK2K5glnVANUX4R6tUwl2vJSvijBVA/exec';
         
         // Version Management
-        const APP_VERSION = '3.1.3'; // Update this when you make changes
+        const APP_VERSION = '3.2'; // Update this when you make changes
         const CHANGELOG = {
-            '3.1.2': {
+            '3.2': {
                 date: '2025-12-09',
-                title: 'Cache Control Update',
+                title: 'Smart Auto-Update System',
                 changes: [
-                    'Added browser cache control to ensure version updates display properly',
-                    'Fixed changelog popup to show when version changes',
-                    'Improved update notification system for GitHub Pages hosting'
+                    'Added automatic update detection that checks for new versions every 30 seconds',
+                    'Update notification only appears after completing an inspection (never interrupts your work)',
+                    'Click the update banner when ready to get the latest version',
+                    'Zero user effort required - updates happen seamlessly in the background'
                 ]
             }
         };
@@ -887,6 +930,8 @@
         let customInspectionPoints = {}; 
         let customItemNumbers = {};
         let currentPointId = null;
+        let updateAvailable = false;
+        let updateCheckInterval = null;
         
         const rx500DownlineMachines = ['Ilapak', 'Case Erector', 'Ilapak', 'Palletizer'];
         const lineConfig = {
@@ -1163,8 +1208,70 @@
             localStorage.setItem('spcAppVersion', APP_VERSION);
         }
         
+        // Update checking system
+        function checkForUpdates() {
+            // Create a hidden iframe to fetch the latest HTML
+            const iframe = document.createElement('iframe');
+            iframe.style.display = 'none';
+            iframe.src = window.location.href + '?cache=' + Date.now();
+            
+            iframe.onload = function() {
+                try {
+                    const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+                    const scriptContent = iframeDoc.documentElement.innerHTML;
+                    
+                    // Extract version from the fetched HTML
+                    const versionMatch = scriptContent.match(/const APP_VERSION = ['"]([^'"]+)['"]/);
+                    if (versionMatch && versionMatch[1]) {
+                        const serverVersion = versionMatch[1];
+                        
+                        // Check if server version is different from current
+                        if (serverVersion !== APP_VERSION) {
+                            console.log('Update detected! Server:', serverVersion, 'Current:', APP_VERSION);
+                            updateAvailable = true;
+                        }
+                    }
+                } catch (error) {
+                    console.log('Could not check for updates:', error);
+                } finally {
+                    document.body.removeChild(iframe);
+                }
+            };
+            
+            iframe.onerror = function() {
+                document.body.removeChild(iframe);
+            };
+            
+            document.body.appendChild(iframe);
+        }
+        
+        function showUpdateBanner() {
+            if (updateAvailable) {
+                const banner = document.getElementById('update-banner');
+                banner.classList.add('show');
+            }
+        }
+        
+        function applyUpdate() {
+            // Reload the page to get the new version
+            window.location.reload(true);
+        }
+        
+        // Start checking for updates every 30 seconds
+        function startUpdateChecker() {
+            // Initial check after 30 seconds
+            setTimeout(() => {
+                checkForUpdates();
+                // Then check every 30 seconds
+                updateCheckInterval = setInterval(checkForUpdates, 30000);
+            }, 30000);
+        }
+        
         // Check version on page load
         checkVersion();
+        
+        // Start checking for updates in the background
+        startUpdateChecker();
         
         function toggleMeasurement(type) {
             const checkbox = document.getElementById(`enable-${type}`);
@@ -1345,6 +1452,9 @@
             let alertHtml = '<div class="alert alert-success">Inspection submitted successfully!</div>';
             document.getElementById('entry-alert').innerHTML = alertHtml;
             setTimeout(() => { document.getElementById('entry-alert').innerHTML = ''; }, 5000);
+            
+            // Show update banner if update is available
+            showUpdateBanner();
             
             if (faults.length > 0) {
                 const faultModalBody = document.getElementById('fault-modal-body');

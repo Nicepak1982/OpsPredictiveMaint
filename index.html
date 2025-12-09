@@ -3,6 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <title>Manufacturing SPC Monitoring System</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
     <style>
@@ -866,17 +869,15 @@
         const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzkmTzohbjm7jRmWmgeU4Zrzp373qBJovncVA1jrK2K5glnVANUX4R6tUwl2vJSvijBVA/exec';
         
         // Version Management
-        const APP_VERSION = '3.1.2'; // Update this when you make changes
+        const APP_VERSION = '3.1.3'; // Update this when you make changes
         const CHANGELOG = {
-            '3.0': {
+            '3.1.2': {
                 date: '2025-12-09',
-                title: 'Item Number Tracking',
+                title: 'Cache Control Update',
                 changes: [
-                    'Added Item# field to inspection form with dropdown autocomplete',
-                    'Item# can now be filtered in Control Charts',
-                    'Item# appears in Data Log and inspection details',
-                    'Item# is included in fault detection analysis',
-                    'Charts now grouped by Item# for better tracking'
+                    'Added browser cache control to ensure version updates display properly',
+                    'Fixed changelog popup to show when version changes',
+                    'Improved update notification system for GitHub Pages hosting'
                 ]
             }
         };
@@ -1164,13 +1165,6 @@
         
         // Check version on page load
         checkVersion();
-        
-        // TEMPORARY DEBUG - Remove after testing
-        console.log('=== VERSION DEBUG ===');
-        console.log('Current APP_VERSION:', APP_VERSION);
-        console.log('Last seen version:', localStorage.getItem('spcAppVersion'));
-        console.log('Should show popup?', localStorage.getItem('spcAppVersion') !== APP_VERSION);
-        alert('Version Debug:\nCurrent: ' + APP_VERSION + '\nLast Seen: ' + localStorage.getItem('spcAppVersion'));
         
         function toggleMeasurement(type) {
             const checkbox = document.getElementById(`enable-${type}`);

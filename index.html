@@ -958,8 +958,19 @@
         const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzkmTzohbjm7jRmWmgeU4Zrzp373qBJovncVA1jrK2K5glnVANUX4R6tUwl2vJSvijBVA/exec';
         
         // Version Management
-        const APP_VERSION = '3.6'; // Update this when you make changes
+        const APP_VERSION = '3.6.1'; // Update this when you make changes
         const CHANGELOG = {
+            '3.4': {
+                date: '2025-12-16',
+                title: 'HMI Temperature Tracking',
+                changes: [
+                    'Added HMI Readout sub-checkbox under Temperature measurement',
+                    'Record both Actual Temperature and HMI Temperature readings',
+                    'Temperature charts now display both readings for comparison',
+                    'Data log shows separate columns for Actual Temp and HMI Temp',
+                    'Inspection details modal displays both temperature values'
+                ]
+            },
             '3.3': {
                 date: '2025-12-09',
                 title: 'Contact Support Feature',
@@ -1235,6 +1246,13 @@
             
             // Build changelog HTML - only show current version
             const log = CHANGELOG[APP_VERSION];
+            
+            // Safety check - if changelog doesn't exist for this version, don't show modal
+            if (!log) {
+                console.log('No changelog entry for version:', APP_VERSION);
+                return;
+            }
+            
             const html = `
                 <div class="changelog-section">
                     <h3>🆕 Version ${APP_VERSION} - ${log.title}</h3>

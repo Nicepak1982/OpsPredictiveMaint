@@ -715,8 +715,16 @@
                             <label for="enable-temperature">Temperature</label>
                         </div>
                         <div class="form-group">
-                            <label>Temperature (°F)</label>
+                            <label>Actual Temperature (°F)</label>
                             <input type="number" step="0.1" id="temperature" disabled>
+                        </div>
+                        <div class="form-group" style="margin-left: 30px; margin-top: 10px;">
+                            <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                                <input type="checkbox" id="enable-hmi-temp" disabled onchange="toggleHMI()" style="width: auto; margin-right: 8px; transform: scale(1.2);">
+                                <label for="enable-hmi-temp" style="margin: 0; font-weight: 600; color: #666;">Record HMI Readout</label>
+                            </div>
+                            <label>HMI Temperature (°F)</label>
+                            <input type="number" step="0.1" id="hmi-temperature" disabled>
                         </div>
                     </div>
                     
@@ -950,16 +958,16 @@
         const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzkmTzohbjm7jRmWmgeU4Zrzp373qBJovncVA1jrK2K5glnVANUX4R6tUwl2vJSvijBVA/exec';
         
         // Version Management
-        const APP_VERSION = '3.5.1'; // Update this when you make changes
+        const APP_VERSION = '3.6'; // Update this when you make changes
         const CHANGELOG = {
-            '3.5.1': {
+            '3.3': {
                 date: '2025-12-09',
                 title: 'Contact Support Feature',
                 changes: [
                     'Added new Contact tab for reporting issues',
-                    'Added Item# to inspection',
-                    'Ability to sort charts by item'
-                    
+                    'Separate channels for App Issues and Equipment Issues',
+                    'Messages automatically routed to the appropriate support team',
+                    'Simple form: Name, Subject, and Message'
                 ]
             }
         };
@@ -1341,12 +1349,36 @@
                         soundCheck.checked = false;
                     }
                 });
+            } else if (type === 'temperature') {
+                const input = document.getElementById('temperature');
+                const hmiCheckbox = document.getElementById('enable-hmi-temp');
+                const hmiInput = document.getElementById('hmi-temperature');
+                
+                input.disabled = !checkbox.checked;
+                hmiCheckbox.disabled = !checkbox.checked;
+                
+                if (!checkbox.checked) {
+                    input.value = '';
+                    hmiCheckbox.checked = false;
+                    hmiInput.disabled = true;
+                    hmiInput.value = '';
+                }
             } else {
                 const input = document.getElementById(type);
                 input.disabled = !checkbox.checked;
                 if (!checkbox.checked) {
                     input.value = '';
                 }
+            }
+        }
+        
+        function toggleHMI() {
+            const hmiCheckbox = document.getElementById('enable-hmi-temp');
+            const hmiInput = document.getElementById('hmi-temperature');
+            
+            hmiInput.disabled = !hmiCheckbox.checked;
+            if (!hmiCheckbox.checked) {
+                hmiInput.value = '';
             }
         }
         
@@ -1447,6 +1479,15 @@
             
             if (document.getElementById('enable-temperature').checked) {
                 inspection.measurements.temperature = parseFloat(document.getElementById('temperature').value);
+                
+                if (document.getElementById('enable-hmi-temp').checked) {
+                    const hmiTemp = document.getElementById('hmi-temperature').value;
+                    if (!hmiTemp || hmiTemp.trim() === '') {
+                        alert('HMI Temperature is required when HMI Readout is checked.');
+                        return false;
+                    }
+                    inspection.measurements.hmiTemperature = parseFloat(hmiTemp);
+                }
             }
             
             if (document.getElementById('enable-vibration').checked) {
@@ -1725,7 +1766,16 @@
                 );
                 
                 if (data.some(d => d.measurements.temperature !== undefined)) {
-                    createControlChart(key, 'temperature', 'Temperature (°F)', data, container);
+                    // Check if any data has HMI temperature
+                    const hasHMIData = data.some(d => d.measurements.hmiTemperature !== undefined);
+                    
+                    if (hasHMIData) {
+                        // Create combined chart with both actual and HMI temperatures
+                        createTemperatureComparisonChart(key, data, container);
+                    } else {
+                        // Create standard temperature chart
+                        createControlChart(key, 'temperature', 'Temperature (°F)', data, container);
+                    }
                 }
                 
                 ['x', 'y', 'z'].forEach(axis => {
@@ -1736,6 +1786,120 @@
                 
                 if (data.some(d => d.measurements.tackRPM !== undefined)) {
                     createControlChart(key, 'tackRPM', 'Tack RPM', data, container);
+                }
+            });
+        }
+        
+        function createTemperatureComparisonChart(title, data, container) {
+            // Extract actual and HMI temperature data
+            const allData = data.map((d, i) => ({
+                actualTemp: d.measurements.temperature,
+                hmiTemp: d.measurements.hmiTemperature,
+                timestamp: new Date(d.timestamp).toLocaleString(),
+                index: i,
+                inspection: d
+            })).filter(d => d.actualTemp !== undefined || d.hmiTemp !== undefined);
+            
+            if (allData.length === 0) return;
+            
+            const timestamps = allData.map(d => d.timestamp);
+            const actualTemps = allData.map(d => d.actualTemp);
+            const hmiTemps = allData.map(d => d.hmiTemp);
+            
+            // Calculate statistics for actual temperatures
+            const validActualTemps = actualTemps.filter(t => t !== undefined && t !== null);
+            const actualMean = validActualTemps.reduce((a, b) => a + b, 0) / validActualTemps.length;
+            const actualStdDev = Math.sqrt(validActualTemps.reduce((sq, n) => sq + Math.pow(n - actualMean, 2), 0) / validActualTemps.length);
+            
+            const actualUCL = actualMean + 3 * actualStdDev;
+            const actualLCL = actualMean - 3 * actualStdDev;
+            const actualUWL = actualMean + 2 * actualStdDev;
+            const actualLWL = actualMean - 2 * actualStdDev;
+            
+            // Detect faults for actual temperatures
+            const faultDetails = validActualTemps.map((_, index) => {
+                const historyToPoint = validActualTemps.slice(0, index + 1);
+                return getPointFaults(historyToPoint);
+            });
+            
+            const pointColors = faultDetails.map(faults => (faults.length > 0) ? '#f44336' : '#667eea');
+            const pointRadii = faultDetails.map(faults => (faults.length > 0) ? 7 : 5);
+            
+            const chartDiv = document.createElement('div');
+            chartDiv.className = 'chart-container';
+            
+            const chartId = `chart-temp-comparison-${title.replace(/\s/g, '-')}`;
+            chartDiv.innerHTML = `
+                <div class="chart-header">
+                    <div class="chart-title">${title} - Temperature Comparison (°F)</div>
+                </div>
+                <canvas id="${chartId}"></canvas>
+            `;
+            
+            container.appendChild(chartDiv);
+            
+            const ctx = chartDiv.querySelector('canvas').getContext('2d');
+            const chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: timestamps,
+                    datasets: [
+                        {
+                            label: 'Actual Temperature',
+                            data: actualTemps,
+                            borderColor: '#667eea',
+                            backgroundColor: 'rgba(102, 126, 234, 0.1)',
+                            tension: 0.1,
+                            pointBackgroundColor: pointColors,
+                            pointBorderColor: pointColors,
+                            pointRadius: pointRadii,
+                            pointHoverRadius: pointRadii.map(r => r + 2)
+                        },
+                        {
+                            label: 'HMI Temperature',
+                            data: hmiTemps,
+                            borderColor: '#ff6b35',
+                            backgroundColor: 'rgba(255, 107, 53, 0.1)',
+                            tension: 0.1,
+                            pointRadius: 5,
+                            pointHoverRadius: 7
+                        },
+                        { label: 'Mean (Actual)', data: Array(timestamps.length).fill(actualMean), borderColor: '#4CAF50', borderDash: [5, 5], pointRadius: 0 },
+                        { label: 'UCL (3σ)', data: Array(timestamps.length).fill(actualUCL), borderColor: '#f44336', borderDash: [10, 5], pointRadius: 0 },
+                        { label: 'LCL (3σ)', data: Array(timestamps.length).fill(actualLCL), borderColor: '#f44336', borderDash: [10, 5], pointRadius: 0 },
+                        { label: 'UWL (2σ)', data: Array(timestamps.length).fill(actualUWL), borderColor: '#ff9800', borderDash: [5, 5], pointRadius: 0 },
+                        { label: 'LWL (2σ)', data: Array(timestamps.length).fill(actualLWL), borderColor: '#ff9800', borderDash: [5, 5], pointRadius: 0 }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    onClick: (event, elements) => {
+                        if (elements.length > 0) {
+                            const index = elements[0].index;
+                            showPointDetails(allData[index].inspection);
+                        }
+                    },
+                    plugins: {
+                        legend: { display: true },
+                        tooltip: {
+                            mode: 'index',
+                            intersect: false,
+                            callbacks: {
+                                afterBody: function(tooltipItems) {
+                                    const dataIndex = tooltipItems[0].dataIndex;
+                                    const faultsForPoint = faultDetails[dataIndex];
+                                    
+                                    if (faultsForPoint && faultsForPoint.length > 0) {
+                                        const faultMessages = faultsForPoint.map(f => `${f.type}: ${f.description}`);
+                                        return ['', ...faultMessages];
+                                    }
+                                    return [];
+                                }
+                            }
+                        }
+                    },
+                    scales: { y: { beginAtZero: false } }
                 }
             });
         }
@@ -1874,7 +2038,11 @@
             `;
             
             if (point.measurements.temperature !== undefined) {
-                html += `<div class="info-row"><span class="info-label">Temperature:</span><span class="info-value">${point.measurements.temperature} °F</span></div>`;
+                html += `<div class="info-row"><span class="info-label">Actual Temperature:</span><span class="info-value">${point.measurements.temperature} °F</span></div>`;
+            }
+            
+            if (point.measurements.hmiTemperature !== undefined) {
+                html += `<div class="info-row"><span class="info-label">HMI Temperature:</span><span class="info-value">${point.measurements.hmiTemperature} °F</span></div>`;
             }
             
             if (point.measurements.vibration) {
@@ -1967,7 +2135,8 @@
                             <th>Machine</th>
                             <th>Point</th>
                             <th>Item#</th>
-                            <th>Temp</th>
+                            <th>Actual Temp</th>
+                            <th>HMI Temp</th>
                             <th>Vib X/Y/Z</th>
                             <th>Sounds</th>
                             <th>RPM</th>
@@ -1980,6 +2149,7 @@
             
             sorted.forEach(i => {
                 const temp = i.measurements.temperature !== undefined ? i.measurements.temperature : '<span class="na-badge">N/A</span>';
+                const hmiTemp = i.measurements.hmiTemperature !== undefined ? i.measurements.hmiTemperature : '<span class="na-badge">N/A</span>';
                 
                 let vib = '';
                 if (i.measurements.vibration) {
@@ -2011,6 +2181,7 @@
                         <td>${i.inspectionPoint}</td>
                         <td>${itemNumber}</td>
                         <td>${temp}</td>
+                        <td>${hmiTemp}</td>
                         <td>${vib}</td>
                         <td>${sounds}</td>
                         <td>${rpm}</td>

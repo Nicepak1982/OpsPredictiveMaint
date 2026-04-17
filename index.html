@@ -1361,8 +1361,13 @@
         const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzkmTzohbjm7jRmWmgeU4Zrzp373qBJovncVA1jrK2K5glnVANUX4R6tUwl2vJSvijBVA/exec';
         
         // ── Version Management ─────────────────────────────────────────────────
-        const APP_VERSION = '3.7.5';
+        const APP_VERSION = '3.7.6';
         const CHANGELOG = {
+            '3.7.6': {
+                date: '2025-04-17',
+                title: 'AI Parse Final Fix',
+                changes: ['Replaced all regex stripping with a direct slice from first { to last } — no regex, no edge cases, just works regardless of what Gemini wraps the response in']
+            },
             '3.7.5': {
                 date: '2025-04-17',
                 title: 'AI Response Parse Fix',
@@ -1715,13 +1720,11 @@ Be specific — reference actual machine names, measurement values, and SPC rule
 
                 if (!rawText) throw new Error('Gemini returned an empty response. Try again.');
 
-                // Strip any number of backticks and optional "json" language tag
-                const stripped = rawText.replace(/`+json\s*/gi, '').replace(/`+/g, '').trim();
-
-                // Find outermost { } block
-                const start = stripped.indexOf('{');
-                const end = stripped.lastIndexOf('}');
-                const jsonCandidate = (start !== -1 && end !== -1) ? stripped.slice(start, end + 1) : stripped;
+                // Just find the JSON object - cut everything before { and after }
+                const start = rawText.indexOf('{');
+                const end = rawText.lastIndexOf('}');
+                if (start === -1 || end === -1) throw new Error('Gemini did not return a JSON object. Try again.');
+                const jsonCandidate = rawText.slice(start, end + 1);
 
                 // Strategy 3: try parsing, then clean control chars and retry
                 try {

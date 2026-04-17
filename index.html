@@ -1361,8 +1361,15 @@
         const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzkmTzohbjm7jRmWmgeU4Zrzp373qBJovncVA1jrK2K5glnVANUX4R6tUwl2vJSvijBVA/exec';
         
         // ── Version Management ─────────────────────────────────────────────────
-        const APP_VERSION = '3.8.3';
+        const APP_VERSION = '3.8.4';
         const CHANGELOG = {
+            '3.8.4': {
+                date: '2025-04-17',
+                title: 'Files API Key Fix',
+                changes: [
+                    'Fixed file_data key name in generateContent request — REST API requires file_data/mime_type/file_uri (underscore), not fileData/mimeType/fileUri (camelCase)'
+                ]
+            },
             '3.8.3': {
                 date: '2025-04-17',
                 title: 'Files API Fix',
@@ -1816,7 +1823,7 @@ Values for status fields: OK, CAUTION, or WARNING. Values for priority: HIGH, ME
                     requestBody = {
                         contents: [{
                             parts: [
-                                { fileData: { mimeType: 'text/plain', fileUri: fileUri } },
+                                { file_data: { mime_type: 'application/json', file_uri: fileUri } },
                                 { text: prompt }
                             ]
                         }],

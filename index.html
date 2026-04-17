@@ -1361,8 +1361,13 @@
         const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzkmTzohbjm7jRmWmgeU4Zrzp373qBJovncVA1jrK2K5glnVANUX4R6tUwl2vJSvijBVA/exec';
         
         // ── Version Management ─────────────────────────────────────────────────
-        const APP_VERSION = '3.7.6';
+        const APP_VERSION = '3.7.7';
         const CHANGELOG = {
+            '3.7.7': {
+                date: '2025-04-17',
+                title: 'AI Token Limit Fix',
+                changes: ['Doubled maxOutputTokens to 8192 — Gemini was truncating the response mid-sentence causing JSON parse failure', 'Trimmed inspection notes to 100 chars each to keep prompt size lean', 'Instructed Gemini to keep responses concise to stay within limits']
+            },
             '3.7.6': {
                 date: '2025-04-17',
                 title: 'AI Parse Final Fix',
@@ -1613,7 +1618,9 @@
 
                 // Sanitize notes — strip characters that could break JSON serialization
                 const sanitize = str => str ? str.replace(/[\x00-\x1F\x7F"\\]/g, ' ').replace(/\s+/g, ' ').trim() : '';
-                const notes = sorted.filter(r => r.notes && r.notes.trim()).map(r => sanitize(r.notes));
+                const notes = sorted.filter(r => r.notes && r.notes.trim())
+                    .map(r => sanitize(r.notes).substring(0, 100))
+                    .slice(-3);
 
                 groupSummaries.push({
                     group: groupKey,
@@ -1663,7 +1670,7 @@ Return a JSON object with exactly these fields:
 - recommendations: an array of objects, each with keys: priority (one of: HIGH, MEDIUM, LOW), action (string describing the recommendation)
 - narrative: a string with 3-5 sentences written for a maintenance supervisor in plain language
 
-Be specific — reference actual machine names, measurement values, and SPC rule violations. If a group has fewer than 5 inspections, note that more data is needed but still comment on what is visible.`;
+Be specific — reference actual machine names, measurement values, and SPC rule violations. Keep each field concise — detail and narrative fields should be 1-3 sentences maximum. If a group has fewer than 5 inspections, note that more data is needed but still comment on what is visible.`;
 
             return prompt;
         }
@@ -1704,7 +1711,7 @@ Be specific — reference actual machine names, measurement values, and SPC rule
                             contents: [{ parts: [{ text: prompt }] }],
                             generationConfig: {
                                 temperature: 0.2,
-                                maxOutputTokens: 4096
+                                maxOutputTokens: 8192
                             }
                         })
                     }

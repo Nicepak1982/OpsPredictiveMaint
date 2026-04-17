@@ -1361,8 +1361,27 @@
         const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzkmTzohbjm7jRmWmgeU4Zrzp373qBJovncVA1jrK2K5glnVANUX4R6tUwl2vJSvijBVA/exec';
         
         // ── Version Management ─────────────────────────────────────────────────
-        const APP_VERSION = '3.8.1';
+        const APP_VERSION = '3.8.3';
         const CHANGELOG = {
+            '3.8.3': {
+                date: '2025-04-17',
+                title: 'Files API Fix',
+                changes: [
+                    'Fixed mime type to application/json for Files API upload',
+                    'Added Content-Length header required by Gemini Files API',
+                    'Extended polling timeout to 30 seconds for large datasets',
+                    'Improved error messages to show exact failure point'
+                ]
+            },
+            '3.8.2': {
+                date: '2025-04-17',
+                title: 'Files API + Fallback',
+                changes: [
+                    'Files API primary: uploads full dataset as a file for complete analysis',
+                    'Automatic fallback to inline summary mode if Files API is unavailable for your API key tier',
+                    'Status bar now shows which mode is being used'
+                ]
+            },
             '3.8.1': {
                 date: '2025-04-17',
                 title: 'Gemini Files API — No More Truncation',
@@ -1693,9 +1712,10 @@ Values for status fields: OK, CAUTION, or WARNING. Values for priority: HIGH, ME
         // Upload data as a file to Gemini Files API, return the file URI
         async function uploadDataToGemini(apiKey, jsonData) {
             const blob = new Blob([jsonData], { type: 'application/json' });
-            const fileName = `spc_inspection_data_${Date.now()}.json`;
+            const fileName = `spc_data_${Date.now()}.json`;
+            const byteLength = new TextEncoder().encode(jsonData).length;
 
-            // Step 1: Start resumable upload session
+            // Step 1: Start resumable upload
             const initResponse = await fetch(
                 `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${apiKey}`,
                 {
@@ -1703,20 +1723,21 @@ Values for status fields: OK, CAUTION, or WARNING. Values for priority: HIGH, ME
                     headers: {
                         'X-Goog-Upload-Protocol': 'resumable',
                         'X-Goog-Upload-Command': 'start',
+                        'X-Goog-Upload-Header-Content-Length': byteLength,
                         'X-Goog-Upload-Header-Content-Type': 'application/json',
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ file: { display_name: fileName } })
+                    body: JSON.stringify({ file: { display_name: fileName, mimeType: 'application/json' } })
                 }
             );
 
             if (!initResponse.ok) {
                 const err = await initResponse.json().catch(() => ({}));
-                throw new Error(err?.error?.message || `File upload init failed: ${initResponse.status}`);
+                throw new Error('FILES_API_UNAVAILABLE: ' + (err && err.error ? err.error.message : initResponse.status));
             }
 
             const uploadUrl = initResponse.headers.get('X-Goog-Upload-URL');
-            if (!uploadUrl) throw new Error('No upload URL returned from Gemini Files API.');
+            if (!uploadUrl) throw new Error('FILES_API_UNAVAILABLE: No upload URL returned.');
 
             // Step 2: Upload the actual data
             const uploadResponse = await fetch(uploadUrl, {
@@ -1724,33 +1745,37 @@ Values for status fields: OK, CAUTION, or WARNING. Values for priority: HIGH, ME
                 headers: {
                     'X-Goog-Upload-Command': 'upload, finalize',
                     'X-Goog-Upload-Offset': '0',
+                    'Content-Length': byteLength,
                     'Content-Type': 'application/json'
                 },
                 body: blob
             });
 
             if (!uploadResponse.ok) {
-                const err = await uploadResponse.text();
-                throw new Error(`File upload failed: ${uploadResponse.status} — ${err.substring(0, 200)}`);
+                const errText = await uploadResponse.text().catch(() => '');
+                throw new Error('FILES_API_UNAVAILABLE: Upload failed ' + uploadResponse.status + ' ' + errText.substring(0, 100));
             }
 
             const fileData = await uploadResponse.json();
-            let file = fileData.file;
+            let file = fileData.file || fileData;
 
-            // Step 3: Wait for file to become ACTIVE
+            // Step 3: Poll until ACTIVE (max 30 seconds)
             let attempts = 0;
-            while (file.state === 'PROCESSING' && attempts < 15) {
+            while (file.state === 'PROCESSING' && attempts < 20) {
                 await new Promise(r => setTimeout(r, 1500));
                 const statusResp = await fetch(
                     `https://generativelanguage.googleapis.com/v1beta/${file.name}?key=${apiKey}`
                 );
-                if (statusResp.ok) file = (await statusResp.json());
+                if (statusResp.ok) file = await statusResp.json();
                 attempts++;
             }
 
-            if (file.state !== 'ACTIVE') throw new Error(`File processing failed (state: ${file.state}). Try again.`);
+            if (file.state !== 'ACTIVE') {
+                throw new Error('FILES_API_UNAVAILABLE: File not active after upload (state: ' + file.state + ')');
+            }
             return file.uri;
         }
+
 
         async function runAIAnalysis() {
             const apiKey = localStorage.getItem('geminiApiKey') || '';
@@ -1761,7 +1786,7 @@ Values for status fields: OK, CAUTION, or WARNING. Values for priority: HIGH, ME
             if (inspections.length === 0) {
                 const s = document.getElementById('ai-status');
                 s.className = 'ai-status error'; s.style.display = 'block';
-                s.innerHTML = '⚠️ No inspection data available. Submit some inspections first.';
+                s.innerHTML = 'No inspection data available. Submit some inspections first.';
                 return;
             }
 
@@ -1773,66 +1798,65 @@ Values for status fields: OK, CAUTION, or WARNING. Values for priority: HIGH, ME
             outputDiv.classList.remove('visible');
             statusDiv.className = 'ai-status running';
             statusDiv.style.display = 'block';
-            statusDiv.innerHTML = '<span class="spinner"></span> Uploading inspection data to Gemini...';
 
             try {
-                // Serialize full inspection dataset to JSON
-                const exportData = {
-                    exportedAt: new Date().toISOString(),
-                    facility: 'Baby Wipe Manufacturing',
-                    totalInspections: inspections.length,
-                    inspections: inspections
-                };
-                const jsonData = JSON.stringify(exportData);
-
-                // Upload to Gemini Files API
-                const fileUri = await uploadDataToGemini(apiKey, jsonData);
-
-                statusDiv.innerHTML = '<span class="spinner"></span> Analyzing data — this may take a few seconds...';
-
-                // Build the prompt (no data inline — it's all in the file)
                 const prompt = buildAIPrompt();
+                let requestBody;
 
-                // Call Gemini with file reference + prompt
+                try {
+                    statusDiv.innerHTML = '<span class="spinner"></span> Uploading inspection data...';
+                    const exportData = JSON.stringify({
+                        exportedAt: new Date().toISOString(),
+                        facility: 'Baby Wipe Manufacturing',
+                        totalInspections: inspections.length,
+                        inspections: inspections
+                    });
+                    const fileUri = await uploadDataToGemini(apiKey, exportData);
+                    statusDiv.innerHTML = '<span class="spinner"></span> Analyzing full dataset...';
+                    requestBody = {
+                        contents: [{
+                            parts: [
+                                { fileData: { mimeType: 'text/plain', fileUri: fileUri } },
+                                { text: prompt }
+                            ]
+                        }],
+                        generationConfig: { temperature: 0.2, maxOutputTokens: 8192 }
+                    };
+                } catch (uploadErr) {
+                    if (uploadErr.message.startsWith('FILES_API_UNAVAILABLE')) {
+                        console.warn('Files API not available, using inline mode');
+                        statusDiv.innerHTML = '<span class="spinner"></span> Analyzing (inline mode)...';
+                        requestBody = {
+                            contents: [{ parts: [{ text: buildInlineFallbackPrompt() }] }],
+                            generationConfig: { temperature: 0.2, maxOutputTokens: 8192 }
+                        };
+                    } else {
+                        throw uploadErr;
+                    }
+                }
+
                 const response = await fetch(
                     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
                     {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            contents: [{
-                                parts: [
-                                    {
-                                        fileData: {
-                                            mimeType: 'application/json',
-                                            fileUri: fileUri
-                                        }
-                                    },
-                                    { text: prompt }
-                                ]
-                            }],
-                            generationConfig: {
-                                temperature: 0.2,
-                                maxOutputTokens: 8192
-                            }
-                        })
+                        body: JSON.stringify(requestBody)
                     }
                 );
 
                 if (!response.ok) {
                     const errData = await response.json().catch(() => ({}));
-                    throw new Error(errData?.error?.message || `API error ${response.status}`);
+                    throw new Error(errData && errData.error ? errData.error.message : `API error ${response.status}`);
                 }
 
                 const data = await response.json();
-                const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+                const rawText = data && data.candidates && data.candidates[0] ? data.candidates[0].content.parts[0].text : '';
                 if (!rawText) throw new Error('Gemini returned an empty response. Try again.');
 
-                // Extract JSON — find outermost { }
-                const start = rawText.indexOf('{');
-                const end   = rawText.lastIndexOf('}');
-                if (start === -1 || end === -1) throw new Error('No JSON found in response. Try again.');
-                const result = JSON.parse(rawText.slice(start, end + 1));
+                const s = rawText.indexOf('{');
+                const e = rawText.lastIndexOf('}');
+                if (s === -1 || e === -1) throw new Error('No JSON found in response. Raw: "' + rawText.substring(0, 200) + '"');
+                const result = JSON.parse(rawText.slice(s, e + 1));
 
                 renderAIResult(result);
                 statusDiv.style.display = 'none';
@@ -1841,11 +1865,74 @@ Values for status fields: OK, CAUTION, or WARNING. Values for priority: HIGH, ME
             } catch (err) {
                 console.error('AI Analysis error:', err);
                 statusDiv.className = 'ai-status error';
-                statusDiv.innerHTML = `⚠️ ${err.message}`;
+                statusDiv.innerHTML = 'Analysis failed: ' + err.message;
             } finally {
                 btn.disabled = false;
             }
         }
+
+        function buildInlineFallbackPrompt() {
+            const avg   = function(arr) { return arr.length ? +(arr.reduce(function(a,b){return a+b;},0)/arr.length).toFixed(1) : null; };
+            const last  = function(arr) { return arr.length ? +arr[arr.length-1].toFixed(1) : null; };
+            const trend = function(arr) {
+                if (arr.length < 4) return 'n/a';
+                const half = Math.floor(arr.length/2);
+                const diff = +(avg(arr.slice(-half)) - avg(arr.slice(0,half))).toFixed(1);
+                if (Math.abs(diff) < 0.5) return 'stable';
+                return diff > 0 ? '+' + diff : '' + diff;
+            };
+            const MEANINGFUL = /abnormal|elevated|increas|decreas|trend|monitor|noise|sound|vibrat|warn|concern|worse|flag|unusual|fail|wear|issue|problem/i;
+
+            const groups = {};
+            inspections.forEach(function(i) {
+                const key = i.line + (i.downline ? '/' + i.downline : '') + ' | ' + i.machine + ' | ' + i.inspectionPoint;
+                if (!groups[key]) groups[key] = [];
+                groups[key].push(i);
+            });
+
+            const lines = [];
+            let faultCount = 0;
+            Object.entries(groups).forEach(function(entry) {
+                const key = entry[0]; const records = entry[1];
+                const sorted = records.slice().sort(function(a,b){return new Date(a.timestamp)-new Date(b.timestamp);});
+                const faults = checkForFaults(sorted[sorted.length-1]);
+                if (faults.length) faultCount++;
+
+                const temps = sorted.map(function(r){return r.measurements.temperature;}).filter(function(v){return v!=null;});
+                const vibX  = sorted.map(function(r){return r.measurements.vibration && r.measurements.vibration.x;}).filter(function(v){return v!=null;});
+                const rpms  = sorted.map(function(r){return r.measurements.tackRPM;}).filter(function(v){return v!=null;});
+
+                const segs = []; let prevS = null; let segStart = 0;
+                sorted.forEach(function(r, idx) {
+                    const sounds = (r.measurements.auditory || []).slice().sort();
+                    const s = sounds.length ? sounds.join('+') : 'none';
+                    if (s !== prevS) {
+                        if (prevS !== null) segs.push('d' + (segStart+1) + '-' + idx + ':' + prevS);
+                        prevS = s; segStart = idx;
+                    }
+                    if (idx === sorted.length-1) segs.push('d' + (segStart+1) + '-' + (idx+1) + ':' + s);
+                });
+                const hasSounds = sorted.some(function(r){return (r.measurements.auditory||[]).length>0;});
+                const notes = sorted.filter(function(r){return r.notes && MEANINGFUL.test(r.notes);}).slice(-3)
+                    .map(function(r){return r.notes.replace(/\s+/g,' ').trim().substring(0,80);});
+
+                const parts = ['[' + key + '] n=' + sorted.length];
+                if (temps.length) parts.push('temp:avg=' + avg(temps) + 'F,last=' + last(temps) + 'F,trend=' + trend(temps));
+                if (vibX.length)  parts.push('vibX:avg=' + avg(vibX) + ',last=' + last(vibX) + ',trend=' + trend(vibX));
+                if (rpms.length)  parts.push('rpm:avg=' + avg(rpms) + ',last=' + last(rpms) + ',trend=' + trend(rpms));
+                if (hasSounds)    parts.push('sounds:[' + segs.join('->') + ']');
+                if (faults.length) parts.push('FAULTS:' + faults.map(function(f){return f.type;}).join(','));
+                if (notes.length) parts.push('notes:' + notes.join(' | '));
+                lines.push(parts.join(' | '));
+            });
+
+            const totalInspections = inspections.length;
+            const uniqueMachines = [...new Set(inspections.map(function(i){return i.machine;}))].length;
+
+            return 'You are a manufacturing equipment diagnostic analyst for a baby wipe facility.\n\nFLEET: ' + totalInspections + ' inspections, ' + uniqueMachines + ' machines, ' + faultCount + ' SPC faults.\n\nDATA (one line per inspection point):\n' + lines.join('\n') + '\n\nRespond with ONLY a valid JSON object, no markdown:\n{"overallStatus":"OK","overallSummary":"string","stats":{"totalInspections":0,"machinesMonitored":0,"machinesWithFaults":0,"machinesOK":0},"machineFindings":[{"name":"string","status":"OK","detail":"string"}],"recommendations":[{"priority":"HIGH","action":"string"}],"narrative":"string"}\n\nStatus values: OK, CAUTION, WARNING. Priority: HIGH, MEDIUM, LOW.';
+        }
+
+
 
         function renderAIResult(result) {
             const body = document.getElementById('ai-summary-body');

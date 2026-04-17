@@ -1698,6 +1698,9 @@ Return ONLY a valid JSON object with these exact keys:
 - recommendations: array of objects with keys priority and action. priority is "HIGH", "MEDIUM", or "LOW". action is one specific sentence.
 - narrative: 3-4 sentences for a maintenance supervisor. Reference specific equipment names, measurements, and observed trends.`;
 
+            return prompt;
+        }
+
         async function runAIAnalysis() {
             const apiKey = localStorage.getItem('geminiApiKey') || '';
             const model = localStorage.getItem('geminiModel') || 'gemini-1.5-flash';

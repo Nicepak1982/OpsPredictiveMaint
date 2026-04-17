@@ -1361,8 +1361,17 @@
         const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzkmTzohbjm7jRmWmgeU4Zrzp373qBJovncVA1jrK2K5glnVANUX4R6tUwl2vJSvijBVA/exec';
         
         // ── Version Management ─────────────────────────────────────────────────
-        const APP_VERSION = '3.7.2';
+        const APP_VERSION = '3.7.3';
         const CHANGELOG = {
+            '3.7.3': {
+                date: '2025-04-17',
+                title: 'AI JSON Response Fix',
+                changes: [
+                    'Fixed root cause of JSON parse errors — prompt no longer contains pipe characters (|) that Gemini was copying literally into its response',
+                    'Added responseMimeType: application/json to API call — forces Gemini to return pure JSON with no markdown or extra text',
+                    'Rewrote prompt format using plain descriptive instructions instead of JSON schema examples'
+                ]
+            },
             '3.7.2': {
                 date: '2025-04-17',
                 title: 'AI Analysis Stability Fix',
@@ -1605,54 +1614,35 @@
             const uniqueLines = [...new Set(inspections.map(i => i.line))].length;
             const totalFaultGroups = groupSummaries.filter(g => g.spcFaults.length > 0).length;
 
-            const prompt = `You are an expert manufacturing equipment diagnostic analyst and SPC (Statistical Process Control) specialist. 
+            const prompt = `You are an expert manufacturing equipment diagnostic analyst and SPC (Statistical Process Control) specialist.
 Analyze the following preventative maintenance inspection data from a manufacturing facility and provide a comprehensive diagnostic report.
 
-=== FLEET OVERVIEW ===
-Total Inspections: ${totalInspections}
-Production Lines: ${uniqueLines}
-Machines/Points Monitored: ${uniqueMachines}
-Groups with Active SPC Faults: ${totalFaultGroups}
+FLEET OVERVIEW:
+- Total Inspections: ${totalInspections}
+- Production Lines: ${uniqueLines}
+- Machines/Points Monitored: ${uniqueMachines}
+- Groups with Active SPC Faults: ${totalFaultGroups}
 
-=== DETAILED INSPECTION DATA BY MACHINE GROUP ===
+INSPECTION DATA BY MACHINE GROUP:
 ${JSON.stringify(groupSummaries, null, 2)}
 
-=== SPC RULES REFERENCE ===
-Rule 1: One point beyond 3σ from the mean (immediate out-of-control)
-Rule 2: 9 consecutive points on the same side of the mean (process shift)
-Rule 3: 6 consecutive points trending up or down (process drift)
-Rule 5: 2 of 3 points beyond 2σ (approaching out-of-control)
-Rule 6: 4 of 5 points beyond 1σ (increased variation)
+SPC RULES REFERENCE:
+- Rule 1: One point beyond 3 standard deviations from the mean (immediate out-of-control)
+- Rule 2: 9 consecutive points on the same side of the mean (process shift)
+- Rule 3: 6 consecutive points trending up or down (process drift)
+- Rule 5: 2 of 3 points beyond 2 standard deviations (approaching out-of-control)
+- Rule 6: 4 of 5 points beyond 1 standard deviation (increased variation)
 
-=== YOUR TASK ===
-Provide a structured diagnostic report in the following EXACT JSON format. Do not include any text outside the JSON.
+YOUR TASK:
+Return a JSON object with exactly these fields:
+- overallStatus: one of these exact strings: OK, CAUTION, or WARNING
+- overallSummary: a string with 2-3 sentences summarizing overall fleet health
+- stats: an object with keys totalInspections, machinesMonitored, machinesWithFaults, machinesOK (all numbers)
+- machineFindings: an array of objects, each with keys: name (string), status (one of: OK, CAUTION, WARNING), detail (string describing the finding)
+- recommendations: an array of objects, each with keys: priority (one of: HIGH, MEDIUM, LOW), action (string describing the recommendation)
+- narrative: a string with 3-5 sentences written for a maintenance supervisor in plain language
 
-{
-  "overallStatus": "OK" | "CAUTION" | "WARNING",
-  "overallSummary": "2-3 sentence executive summary of overall fleet health",
-  "stats": {
-    "totalInspections": number,
-    "machinesMonitored": number,
-    "machinesWithFaults": number,
-    "machinesOK": number
-  },
-  "machineFindings": [
-    {
-      "name": "machine group name",
-      "status": "OK" | "CAUTION" | "WARNING",
-      "detail": "Concise finding: what the data shows, any anomalies, trend analysis"
-    }
-  ],
-  "recommendations": [
-    {
-      "priority": "HIGH" | "MEDIUM" | "LOW",
-      "action": "Specific actionable recommendation"
-    }
-  ],
-  "narrative": "A 3-5 sentence paragraph written for a maintenance supervisor — plain language, practical insights about what the data patterns mean for equipment health and production risk."
-}
-
-Be specific — reference actual machine names, measurement values, and SPC rule violations. If data is limited (fewer than 5 inspections per group), note that more data is needed for reliable SPC analysis but still comment on what is visible.`;
+Be specific — reference actual machine names, measurement values, and SPC rule violations. If a group has fewer than 5 inspections, note that more data is needed but still comment on what is visible.`;
 
             return prompt;
         }
@@ -1693,7 +1683,8 @@ Be specific — reference actual machine names, measurement values, and SPC rule
                             contents: [{ parts: [{ text: prompt }] }],
                             generationConfig: {
                                 temperature: 0.2,
-                                maxOutputTokens: 4096
+                                maxOutputTokens: 4096,
+                                responseMimeType: 'application/json'
                             }
                         })
                     }

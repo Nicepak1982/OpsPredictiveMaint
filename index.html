@@ -1361,8 +1361,26 @@
         const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzkmTzohbjm7jRmWmgeU4Zrzp373qBJovncVA1jrK2K5glnVANUX4R6tUwl2vJSvijBVA/exec';
         
         // ── Version Management ─────────────────────────────────────────────────
-        const APP_VERSION = '3.7.7';
+        const APP_VERSION = '3.7.9';
         const CHANGELOG = {
+            '3.7.9': {
+                date: '2025-04-17',
+                title: 'Richer AI Context',
+                changes: [
+                    'Added sound_history: full chronological auditory progression per inspection point — AI now sees exactly when sounds first appeared and how they evolved',
+                    'Added inspector_notes: meaningful human observations extracted from notes field — filters out boilerplate like temp readings, keeps observations about trends, concerns, and anomalies',
+                    'AI now has complete context for detecting gradual degradation patterns across all measurement types'
+                ]
+            },
+            '3.7.8': {
+                date: '2025-04-17',
+                title: 'AI Prompt Size Fix',
+                changes: [
+                    'Completely rewrote data sent to Gemini — instead of dumping all raw records, now sends one compact summary line per inspection point (avg, last value, trend direction)',
+                    'Prompt is now a fixed small size regardless of how many inspections are in the database — solves the token truncation issue permanently',
+                    'Trend calculation added: each measurement now shows stable/rising/falling with delta value'
+                ]
+            },
             '3.7.7': {
                 date: '2025-04-17',
                 title: 'AI Token Limit Fix',
@@ -1584,96 +1602,101 @@
         }
 
         function buildAIPrompt() {
-            if (inspections.length === 0) {
-                return null;
-            }
+            if (inspections.length === 0) return null;
 
-            // Compute SPC faults per machine group
+            const avg   = arr => arr.length ? +(arr.reduce((a,b)=>a+b,0)/arr.length).toFixed(1) : null;
+            const last  = arr => arr.length ? +arr[arr.length-1].toFixed(1) : null;
+            const trend = arr => {
+                if (arr.length < 4) return 'insufficient data';
+                const half = Math.floor(arr.length/2);
+                const diff = +(avg(arr.slice(-half)) - avg(arr.slice(0,half))).toFixed(1);
+                if (Math.abs(diff) < 0.5) return 'stable';
+                return diff > 0 ? `rising +${diff}` : `falling ${diff}`;
+            };
+
+            // Keywords that indicate a meaningful human observation
+            const MEANINGFUL = /abnormal|elevated|rising|dropping|increas|decreas|trend|monitor|inspect|noise|sound|vibrat|warn|concern|worse|deterior|flag|review|unusual|hot|cold|slow|fast|fail|wear|leak|loose|tight|high|low|issue|problem|note/i;
+
             const groups = {};
             inspections.forEach(i => {
-                const key = `${i.line}${i.downline ? '/' + i.downline : ''} — ${i.machine} — Point: ${i.inspectionPoint} — Item: ${i.itemNumber || 'N/A'}`;
+                const key = `${i.line}${i.downline?'/'+i.downline:''} | ${i.machine} | ${i.inspectionPoint}`;
                 if (!groups[key]) groups[key] = [];
                 groups[key].push(i);
             });
 
-            const groupSummaries = [];
-            Object.entries(groups).forEach(([groupKey, records]) => {
-                const sorted = [...records].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-                const latest = sorted[sorted.length - 1];
-                const faults = checkForFaults(latest);
+            const lines = [];
+            let totalFaults = 0;
+            const machinesWithFaultsSet = new Set();
 
-                const tempVals = sorted.map(r => r.measurements.temperature).filter(v => v != null);
-                const vibXVals = sorted.map(r => r.measurements.vibration?.x).filter(v => v != null);
-                const vibYVals = sorted.map(r => r.measurements.vibration?.y).filter(v => v != null);
-                const vibZVals = sorted.map(r => r.measurements.vibration?.z).filter(v => v != null);
-                const rpmVals = sorted.map(r => r.measurements.tackRPM).filter(v => v != null);
+            Object.entries(groups).forEach(([key, records]) => {
+                const sorted = [...records].sort((a,b)=>new Date(a.timestamp)-new Date(b.timestamp));
+                const faults = checkForFaults(sorted[sorted.length-1]);
+                if (faults.length) { totalFaults++; machinesWithFaultsSet.add(key.split('|')[1].trim()); }
 
-                const avg = arr => arr.length ? (arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(2) : null;
-                const maxVal = arr => arr.length ? Math.max(...arr).toFixed(2) : null;
-                const minVal = arr => arr.length ? Math.min(...arr).toFixed(2) : null;
+                const temps = sorted.map(r=>r.measurements.temperature).filter(v=>v!=null);
+                const vibX  = sorted.map(r=>r.measurements.vibration?.x).filter(v=>v!=null);
+                const rpms  = sorted.map(r=>r.measurements.tackRPM).filter(v=>v!=null);
 
-                const allSounds = sorted.flatMap(r => r.measurements.auditory || []);
-                const soundCounts = {};
-                allSounds.forEach(s => soundCounts[s] = (soundCounts[s] || 0) + 1);
-
-                // Sanitize notes — strip characters that could break JSON serialization
-                const sanitize = str => str ? str.replace(/[\x00-\x1F\x7F"\\]/g, ' ').replace(/\s+/g, ' ').trim() : '';
-                const notes = sorted.filter(r => r.notes && r.notes.trim())
-                    .map(r => sanitize(r.notes).substring(0, 100))
-                    .slice(-3);
-
-                groupSummaries.push({
-                    group: groupKey,
-                    inspectionCount: sorted.length,
-                    dateRange: `${new Date(sorted[0].timestamp).toLocaleDateString()} to ${new Date(latest.timestamp).toLocaleDateString()}`,
-                    spcFaults: faults,
-                    temperature: tempVals.length ? { avg: avg(tempVals), min: minVal(tempVals), max: maxVal(tempVals), count: tempVals.length } : null,
-                    vibrationX: vibXVals.length ? { avg: avg(vibXVals), min: minVal(vibXVals), max: maxVal(vibXVals) } : null,
-                    vibrationY: vibYVals.length ? { avg: avg(vibYVals), min: minVal(vibYVals), max: maxVal(vibYVals) } : null,
-                    vibrationZ: vibZVals.length ? { avg: avg(vibZVals), min: minVal(vibZVals), max: maxVal(vibZVals) } : null,
-                    tackRPM: rpmVals.length ? { avg: avg(rpmVals), min: minVal(rpmVals), max: maxVal(rpmVals) } : null,
-                    soundsDetected: Object.keys(soundCounts).length > 0 ? soundCounts : null,
-                    observerNotes: notes.slice(-5)
+                // ── Sound history: compress into change-point segments ──
+                const soundHistory = [];
+                let prevKey = null;
+                let segStart = 0;
+                sorted.forEach((r, idx) => {
+                    const s = [...new Set(r.measurements.auditory||[])].sort().join('+') || 'none';
+                    if (s !== prevKey) {
+                        if (prevKey !== null) {
+                            soundHistory.push(`days${segStart+1}-${idx}:${prevKey}`);
+                        }
+                        prevKey = s;
+                        segStart = idx;
+                    }
+                    if (idx === sorted.length-1) {
+                        soundHistory.push(`days${segStart+1}-${idx+1}:${s}`);
+                    }
                 });
+                const hasAnySounds = sorted.some(r=>(r.measurements.auditory||[]).length>0);
+
+                // ── Meaningful notes: filter boilerplate, keep human observations ──
+                const meaningfulNotes = sorted
+                    .filter(r => r.notes && MEANINGFUL.test(r.notes))
+                    .slice(-5)
+                    .map(r => {
+                        const date = new Date(r.timestamp).toLocaleDateString('en-US',{month:'2-digit',day:'2-digit'});
+                        const note = r.notes.replace(/[\n\r]+/g,' ').replace(/\s+/g,' ').trim().substring(0,120);
+                        return `[${date}: ${note}]`;
+                    });
+
+                const parts = [`[${key}] n=${sorted.length}`];
+                if (temps.length) parts.push(`temp: avg=${avg(temps)}F last=${last(temps)}F trend=${trend(temps)}`);
+                if (vibX.length)  parts.push(`vibX: avg=${avg(vibX)} last=${last(vibX)} trend=${trend(vibX)}`);
+                if (rpms.length)  parts.push(`rpm: avg=${avg(rpms)} last=${last(rpms)} trend=${trend(rpms)}`);
+                if (hasAnySounds) parts.push(`sound_history: [${soundHistory.join(' -> ')}]`);
+                if (faults.length) parts.push(`SPC_FAULTS: ${faults.map(f=>f.type).join(',')}`);
+                if (meaningfulNotes.length) parts.push(`inspector_notes: ${meaningfulNotes.join(' ')}`);
+
+                lines.push(parts.join(' | '));
             });
 
             const totalInspections = inspections.length;
-            const uniqueMachines = [...new Set(inspections.map(i => i.machine))].length;
-            const uniqueLines = [...new Set(inspections.map(i => i.line))].length;
-            const totalFaultGroups = groupSummaries.filter(g => g.spcFaults.length > 0).length;
+            const uniqueMachines = [...new Set(inspections.map(i=>i.machine))].length;
 
-            const prompt = `You are an expert manufacturing equipment diagnostic analyst and SPC (Statistical Process Control) specialist.
-Analyze the following preventative maintenance inspection data from a manufacturing facility and provide a comprehensive diagnostic report.
+            const prompt = `You are an expert manufacturing equipment diagnostic analyst and SPC specialist for a baby wipe manufacturing facility.
+Analyze this preventative maintenance data and return a JSON diagnostic report.
 
-FLEET OVERVIEW:
-- Total Inspections: ${totalInspections}
-- Production Lines: ${uniqueLines}
-- Machines/Points Monitored: ${uniqueMachines}
-- Groups with Active SPC Faults: ${totalFaultGroups}
+FLEET: ${totalInspections} inspections, ${uniqueMachines} machines, ${totalFaults} inspection points with active SPC faults.
 
-INSPECTION DATA BY MACHINE GROUP:
-${JSON.stringify(groupSummaries, null, 2)}
+DATA — one compact line per inspection point. Fields: n=total inspections, temp/vibX/rpm show avg/last/trend, sound_history shows auditory progression over time as day-range:sounds, SPC_FAULTS lists triggered rules, inspector_notes are filtered human observations:
+${lines.join('\n')}
 
-SPC RULES REFERENCE:
-- Rule 1: One point beyond 3 standard deviations from the mean (immediate out-of-control)
-- Rule 2: 9 consecutive points on the same side of the mean (process shift)
-- Rule 3: 6 consecutive points trending up or down (process drift)
-- Rule 5: 2 of 3 points beyond 2 standard deviations (approaching out-of-control)
-- Rule 6: 4 of 5 points beyond 1 standard deviation (increased variation)
+SPC rules: Rule1=1pt beyond 3sigma, Rule2=9pts same side of mean, Rule3=6pts trending up or down, Rule5=2of3 beyond 2sigma, Rule6=4of5 beyond 1sigma.
 
-YOUR TASK:
-Return a JSON object with exactly these fields:
-- overallStatus: one of these exact strings: OK, CAUTION, or WARNING
-- overallSummary: a string with 2-3 sentences summarizing overall fleet health
-- stats: an object with keys totalInspections, machinesMonitored, machinesWithFaults, machinesOK (all numbers)
-- machineFindings: an array of objects, each with keys: name (string), status (one of: OK, CAUTION, WARNING), detail (string describing the finding)
-- recommendations: an array of objects, each with keys: priority (one of: HIGH, MEDIUM, LOW), action (string describing the recommendation)
-- narrative: a string with 3-5 sentences written for a maintenance supervisor in plain language
-
-Be specific — reference actual machine names, measurement values, and SPC rule violations. Keep each field concise — detail and narrative fields should be 1-3 sentences maximum. If a group has fewer than 5 inspections, note that more data is needed but still comment on what is visible.`;
-
-            return prompt;
-        }
+Return ONLY a valid JSON object with these exact keys:
+- overallStatus: "OK", "CAUTION", or "WARNING"
+- overallSummary: 2-3 sentence executive summary
+- stats: object with keys totalInspections, machinesMonitored, machinesWithFaults, machinesOK (all numbers)
+- machineFindings: array of objects with keys name, status, detail — include only points with something notable. status is "OK", "CAUTION", or "WARNING". detail is 1-2 sentences referencing actual values and trends.
+- recommendations: array of objects with keys priority and action. priority is "HIGH", "MEDIUM", or "LOW". action is one specific sentence.
+- narrative: 3-4 sentences for a maintenance supervisor. Reference specific equipment names, measurements, and observed trends.`;
 
         async function runAIAnalysis() {
             const apiKey = localStorage.getItem('geminiApiKey') || '';

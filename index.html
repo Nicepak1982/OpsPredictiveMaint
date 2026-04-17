@@ -1361,8 +1361,15 @@
         const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzkmTzohbjm7jRmWmgeU4Zrzp373qBJovncVA1jrK2K5glnVANUX4R6tUwl2vJSvijBVA/exec';
         
         // ── Version Management ─────────────────────────────────────────────────
-        const APP_VERSION = '3.7.4';
+        const APP_VERSION = '3.7.5';
         const CHANGELOG = {
+            '3.7.5': {
+                date: '2025-04-17',
+                title: 'AI Response Parse Fix',
+                changes: [
+                    'Fixed root cause: Gemini 2.5 Flash wraps responses in 4 backticks instead of 3 — stripping now handles any number of backticks'
+                ]
+            },
             '3.7.4': {
                 date: '2025-04-17',
                 title: 'AI Parser Overhaul',
@@ -1708,11 +1715,10 @@ Be specific — reference actual machine names, measurement values, and SPC rule
 
                 if (!rawText) throw new Error('Gemini returned an empty response. Try again.');
 
-                // Strategy 1: strip fences and parse directly
-                let result = null;
-                const stripped = rawText.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
+                // Strip any number of backticks and optional "json" language tag
+                const stripped = rawText.replace(/`+json\s*/gi, '').replace(/`+/g, '').trim();
 
-                // Strategy 2: find outermost { } block
+                // Find outermost { } block
                 const start = stripped.indexOf('{');
                 const end = stripped.lastIndexOf('}');
                 const jsonCandidate = (start !== -1 && end !== -1) ? stripped.slice(start, end + 1) : stripped;

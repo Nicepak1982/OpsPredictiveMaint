@@ -1361,8 +1361,17 @@
         const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzkmTzohbjm7jRmWmgeU4Zrzp373qBJovncVA1jrK2K5glnVANUX4R6tUwl2vJSvijBVA/exec';
         
         // ── Version Management ─────────────────────────────────────────────────
-        const APP_VERSION = '3.7.3';
+        const APP_VERSION = '3.7.4';
         const CHANGELOG = {
+            '3.7.4': {
+                date: '2025-04-17',
+                title: 'AI Parser Overhaul',
+                changes: [
+                    'Removed responseMimeType which was silently failing on some models',
+                    'Replaced JSON parser with multi-strategy extraction: direct parse, outermost brace extraction, then control-character cleanup',
+                    'If parsing still fails, error now shows the first 300 characters of the raw AI response to help diagnose edge cases'
+                ]
+            },
             '3.7.3': {
                 date: '2025-04-17',
                 title: 'AI JSON Response Fix',
@@ -1683,8 +1692,7 @@ Be specific — reference actual machine names, measurement values, and SPC rule
                             contents: [{ parts: [{ text: prompt }] }],
                             generationConfig: {
                                 temperature: 0.2,
-                                maxOutputTokens: 4096,
-                                responseMimeType: 'application/json'
+                                maxOutputTokens: 4096
                             }
                         })
                     }
@@ -1698,24 +1706,27 @@ Be specific — reference actual machine names, measurement values, and SPC rule
                 const data = await response.json();
                 const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
-                // Robust JSON extraction: strip fences, then find the first { ... } block
-                let jsonText = rawText
-                    .replace(/```json\s*/gi, '')
-                    .replace(/```\s*/g, '')
-                    .trim();
+                if (!rawText) throw new Error('Gemini returned an empty response. Try again.');
 
-                // Extract just the JSON object in case there's extra text before/after
-                const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
-                if (!jsonMatch) throw new Error('No valid JSON found in AI response. Try running again.');
-                jsonText = jsonMatch[0];
+                // Strategy 1: strip fences and parse directly
+                let result = null;
+                const stripped = rawText.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
 
-                let result;
+                // Strategy 2: find outermost { } block
+                const start = stripped.indexOf('{');
+                const end = stripped.lastIndexOf('}');
+                const jsonCandidate = (start !== -1 && end !== -1) ? stripped.slice(start, end + 1) : stripped;
+
+                // Strategy 3: try parsing, then clean control chars and retry
                 try {
-                    result = JSON.parse(jsonText);
-                } catch (parseErr) {
-                    // Last resort: try to recover by removing control characters
-                    const cleaned = jsonText.replace(/[\x00-\x09\x0B\x0C\x0E-\x1F\x7F]/g, '');
-                    result = JSON.parse(cleaned);
+                    result = JSON.parse(jsonCandidate);
+                } catch (e1) {
+                    try {
+                        result = JSON.parse(jsonCandidate.replace(/[\x00-\x09\x0B\x0C\x0E-\x1F]/g, ''));
+                    } catch (e2) {
+                        // Show the first 300 chars of raw response to help diagnose
+                        throw new Error(`Could not parse AI response. Raw start: "${rawText.substring(0, 300)}"`);
+                    }
                 }
 
                 renderAIResult(result);

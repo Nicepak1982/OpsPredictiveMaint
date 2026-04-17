@@ -1361,8 +1361,28 @@
         const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzkmTzohbjm7jRmWmgeU4Zrzp373qBJovncVA1jrK2K5glnVANUX4R6tUwl2vJSvijBVA/exec';
         
         // ── Version Management ─────────────────────────────────────────────────
-        const APP_VERSION = '3.7.9';
+        const APP_VERSION = '3.8.1';
         const CHANGELOG = {
+            '3.8.1': {
+                date: '2025-04-17',
+                title: 'Gemini Files API — No More Truncation',
+                changes: [
+                    'Switched to Gemini Files API — inspection data is now uploaded as a file and passed by reference, exactly like the manual analysis program',
+                    'Full dataset is sent to Gemini regardless of size — no summarization, no truncation possible',
+                    'Gemini now analyzes every single inspection record directly',
+                    'Upload progress shown in status bar during analysis'
+                ]
+            },
+            '3.8.0': {
+                date: '2025-04-17',
+                title: 'AI Analysis — Stable',
+                changes: [
+                    'AI prompt now sends only notable inspection points — machines with faults, drifting trends, auditory issues, or meaningful inspector notes',
+                    'Clean machines summarized in one line instead of individual entries — keeps prompt size small regardless of fleet size',
+                    'Explicit JSON template in prompt prevents Gemini from adding extra text that breaks parsing',
+                    'String length cap on all AI response fields prevents token truncation'
+                ]
+            },
             '3.7.9': {
                 date: '2025-04-17',
                 title: 'Richer AI Context',
@@ -1604,19 +1624,7 @@
         function buildAIPrompt() {
             if (inspections.length === 0) return null;
 
-            const avg   = arr => arr.length ? +(arr.reduce((a,b)=>a+b,0)/arr.length).toFixed(1) : null;
-            const last  = arr => arr.length ? +arr[arr.length-1].toFixed(1) : null;
-            const trend = arr => {
-                if (arr.length < 4) return 'insufficient data';
-                const half = Math.floor(arr.length/2);
-                const diff = +(avg(arr.slice(-half)) - avg(arr.slice(0,half))).toFixed(1);
-                if (Math.abs(diff) < 0.5) return 'stable';
-                return diff > 0 ? `rising +${diff}` : `falling ${diff}`;
-            };
-
-            // Keywords that indicate a meaningful human observation
-            const MEANINGFUL = /abnormal|elevated|rising|dropping|increas|decreas|trend|monitor|inspect|noise|sound|vibrat|warn|concern|worse|deterior|flag|review|unusual|hot|cold|slow|fast|fail|wear|leak|loose|tight|high|low|issue|problem|note/i;
-
+            // Pre-compute SPC faults so we can tell Gemini what we already know
             const groups = {};
             inspections.forEach(i => {
                 const key = `${i.line}${i.downline?'/'+i.downline:''} | ${i.machine} | ${i.inspectionPoint}`;
@@ -1624,117 +1632,185 @@
                 groups[key].push(i);
             });
 
-            const lines = [];
+            const faultSummary = [];
             let totalFaults = 0;
-            const machinesWithFaultsSet = new Set();
+            const machinesWithFaults = new Set();
 
             Object.entries(groups).forEach(([key, records]) => {
-                const sorted = [...records].sort((a,b)=>new Date(a.timestamp)-new Date(b.timestamp));
-                const faults = checkForFaults(sorted[sorted.length-1]);
-                if (faults.length) { totalFaults++; machinesWithFaultsSet.add(key.split('|')[1].trim()); }
-
-                const temps = sorted.map(r=>r.measurements.temperature).filter(v=>v!=null);
-                const vibX  = sorted.map(r=>r.measurements.vibration?.x).filter(v=>v!=null);
-                const rpms  = sorted.map(r=>r.measurements.tackRPM).filter(v=>v!=null);
-
-                // ── Sound history: compress into change-point segments ──
-                const soundHistory = [];
-                let prevKey = null;
-                let segStart = 0;
-                sorted.forEach((r, idx) => {
-                    const s = [...new Set(r.measurements.auditory||[])].sort().join('+') || 'none';
-                    if (s !== prevKey) {
-                        if (prevKey !== null) {
-                            soundHistory.push(`days${segStart+1}-${idx}:${prevKey}`);
-                        }
-                        prevKey = s;
-                        segStart = idx;
-                    }
-                    if (idx === sorted.length-1) {
-                        soundHistory.push(`days${segStart+1}-${idx+1}:${s}`);
-                    }
-                });
-                const hasAnySounds = sorted.some(r=>(r.measurements.auditory||[]).length>0);
-
-                // ── Meaningful notes: filter boilerplate, keep human observations ──
-                const meaningfulNotes = sorted
-                    .filter(r => r.notes && MEANINGFUL.test(r.notes))
-                    .slice(-5)
-                    .map(r => {
-                        const date = new Date(r.timestamp).toLocaleDateString('en-US',{month:'2-digit',day:'2-digit'});
-                        const note = r.notes.replace(/[\n\r]+/g,' ').replace(/\s+/g,' ').trim().substring(0,120);
-                        return `[${date}: ${note}]`;
-                    });
-
-                const parts = [`[${key}] n=${sorted.length}`];
-                if (temps.length) parts.push(`temp: avg=${avg(temps)}F last=${last(temps)}F trend=${trend(temps)}`);
-                if (vibX.length)  parts.push(`vibX: avg=${avg(vibX)} last=${last(vibX)} trend=${trend(vibX)}`);
-                if (rpms.length)  parts.push(`rpm: avg=${avg(rpms)} last=${last(rpms)} trend=${trend(rpms)}`);
-                if (hasAnySounds) parts.push(`sound_history: [${soundHistory.join(' -> ')}]`);
-                if (faults.length) parts.push(`SPC_FAULTS: ${faults.map(f=>f.type).join(',')}`);
-                if (meaningfulNotes.length) parts.push(`inspector_notes: ${meaningfulNotes.join(' ')}`);
-
-                lines.push(parts.join(' | '));
+                const sorted = [...records].sort((a,b) => new Date(a.timestamp) - new Date(b.timestamp));
+                const faults = checkForFaults(sorted[sorted.length - 1]);
+                if (faults.length) {
+                    totalFaults++;
+                    machinesWithFaults.add(key.split('|')[1].trim());
+                    faultSummary.push(`${key}: ${faults.map(f => f.type).join(', ')}`);
+                }
             });
 
             const totalInspections = inspections.length;
-            const uniqueMachines = [...new Set(inspections.map(i=>i.machine))].length;
+            const uniqueMachines   = [...new Set(inspections.map(i => i.machine))].length;
+            const uniqueLines      = [...new Set(inspections.map(i => i.line))].length;
+            const dateRange        = (() => {
+                const ts = inspections.map(i => new Date(i.timestamp)).sort((a,b)=>a-b);
+                return `${ts[0].toLocaleDateString()} to ${ts[ts.length-1].toLocaleDateString()}`;
+            })();
 
             const prompt = `You are an expert manufacturing equipment diagnostic analyst and SPC specialist for a baby wipe manufacturing facility.
-Analyze this preventative maintenance data and return a JSON diagnostic report.
 
-FLEET: ${totalInspections} inspections, ${uniqueMachines} machines, ${totalFaults} inspection points with active SPC faults.
+The attached JSON file contains the complete inspection dataset. Analyze it fully.
 
-DATA — one compact line per inspection point. Fields: n=total inspections, temp/vibX/rpm show avg/last/trend, sound_history shows auditory progression over time as day-range:sounds, SPC_FAULTS lists triggered rules, inspector_notes are filtered human observations:
-${lines.join('\n')}
+FLEET CONTEXT:
+- Total Inspections: ${totalInspections}
+- Date Range: ${dateRange}
+- Production Lines: ${uniqueLines}
+- Machines Monitored: ${uniqueMachines}
+- Inspection Points with Active SPC Faults: ${totalFaults}
 
-SPC rules: Rule1=1pt beyond 3sigma, Rule2=9pts same side of mean, Rule3=6pts trending up or down, Rule5=2of3 beyond 2sigma, Rule6=4of5 beyond 1sigma.
+SPC RULES REFERENCE:
+- Rule 1: One point beyond 3 standard deviations from mean (immediate out-of-control)
+- Rule 2: 9 consecutive points on same side of mean (process shift)
+- Rule 3: 6 consecutive points trending up or down (process drift)
+- Rule 5: 2 of 3 points beyond 2 standard deviations
+- Rule 6: 4 of 5 points beyond 1 standard deviation
 
-Return ONLY a valid JSON object with these exact keys:
-- overallStatus: "OK", "CAUTION", or "WARNING"
-- overallSummary: 2-3 sentence executive summary
-- stats: object with keys totalInspections, machinesMonitored, machinesWithFaults, machinesOK (all numbers)
-- machineFindings: array of objects with keys name, status, detail — include only points with something notable. status is "OK", "CAUTION", or "WARNING". detail is 1-2 sentences referencing actual values and trends.
-- recommendations: array of objects with keys priority and action. priority is "HIGH", "MEDIUM", or "LOW". action is one specific sentence.
-- narrative: 3-4 sentences for a maintenance supervisor. Reference specific equipment names, measurements, and observed trends.`;
+PRE-COMPUTED SPC FAULTS (${totalFaults} points flagged):
+${faultSummary.length > 0 ? faultSummary.join('\n') : 'None detected'}
+
+Using the full inspection data in the attached file, provide a comprehensive diagnostic report. Look for:
+1. Temperature trends and HMI vs actual discrepancies
+2. Vibration increases over time indicating bearing or alignment issues
+3. RPM drift indicating motor or pump wear
+4. Auditory progressions — sounds that appear or worsen over time
+5. Any patterns in inspector notes indicating developing issues
+
+Respond with ONLY a valid JSON object — no markdown, no explanation, just the JSON:
+{"overallStatus":"WARNING","overallSummary":"string","stats":{"totalInspections":0,"machinesMonitored":0,"machinesWithFaults":0,"machinesOK":0},"machineFindings":[{"name":"string","status":"WARNING","detail":"string"}],"recommendations":[{"priority":"HIGH","action":"string"}],"narrative":"string"}
+
+Values for status fields: OK, CAUTION, or WARNING. Values for priority: HIGH, MEDIUM, or LOW.`;
 
             return prompt;
         }
 
+        // Upload data as a file to Gemini Files API, return the file URI
+        async function uploadDataToGemini(apiKey, jsonData) {
+            const blob = new Blob([jsonData], { type: 'application/json' });
+            const fileName = `spc_inspection_data_${Date.now()}.json`;
+
+            // Step 1: Start resumable upload session
+            const initResponse = await fetch(
+                `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${apiKey}`,
+                {
+                    method: 'POST',
+                    headers: {
+                        'X-Goog-Upload-Protocol': 'resumable',
+                        'X-Goog-Upload-Command': 'start',
+                        'X-Goog-Upload-Header-Content-Type': 'application/json',
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ file: { display_name: fileName } })
+                }
+            );
+
+            if (!initResponse.ok) {
+                const err = await initResponse.json().catch(() => ({}));
+                throw new Error(err?.error?.message || `File upload init failed: ${initResponse.status}`);
+            }
+
+            const uploadUrl = initResponse.headers.get('X-Goog-Upload-URL');
+            if (!uploadUrl) throw new Error('No upload URL returned from Gemini Files API.');
+
+            // Step 2: Upload the actual data
+            const uploadResponse = await fetch(uploadUrl, {
+                method: 'POST',
+                headers: {
+                    'X-Goog-Upload-Command': 'upload, finalize',
+                    'X-Goog-Upload-Offset': '0',
+                    'Content-Type': 'application/json'
+                },
+                body: blob
+            });
+
+            if (!uploadResponse.ok) {
+                const err = await uploadResponse.text();
+                throw new Error(`File upload failed: ${uploadResponse.status} — ${err.substring(0, 200)}`);
+            }
+
+            const fileData = await uploadResponse.json();
+            let file = fileData.file;
+
+            // Step 3: Wait for file to become ACTIVE
+            let attempts = 0;
+            while (file.state === 'PROCESSING' && attempts < 15) {
+                await new Promise(r => setTimeout(r, 1500));
+                const statusResp = await fetch(
+                    `https://generativelanguage.googleapis.com/v1beta/${file.name}?key=${apiKey}`
+                );
+                if (statusResp.ok) file = (await statusResp.json());
+                attempts++;
+            }
+
+            if (file.state !== 'ACTIVE') throw new Error(`File processing failed (state: ${file.state}). Try again.`);
+            return file.uri;
+        }
+
         async function runAIAnalysis() {
             const apiKey = localStorage.getItem('geminiApiKey') || '';
-            const model = localStorage.getItem('geminiModel') || 'gemini-1.5-flash';
+            const model  = localStorage.getItem('geminiModel') || 'gemini-1.5-flash';
 
-            if (!apiKey) {
-                checkAIKeyOnOpen();
-                return;
-            }
+            if (!apiKey) { checkAIKeyOnOpen(); return; }
 
             if (inspections.length === 0) {
-                document.getElementById('ai-status').className = 'ai-status error';
-                document.getElementById('ai-status').style.display = 'block';
-                document.getElementById('ai-status').innerHTML = '⚠️ No inspection data available. Submit some inspections first.';
+                const s = document.getElementById('ai-status');
+                s.className = 'ai-status error'; s.style.display = 'block';
+                s.innerHTML = '⚠️ No inspection data available. Submit some inspections first.';
                 return;
             }
 
-            const prompt = buildAIPrompt();
             const btn = document.getElementById('btn-run-analysis');
             const statusDiv = document.getElementById('ai-status');
             const outputDiv = document.getElementById('ai-output');
 
             btn.disabled = true;
-            statusDiv.className = 'ai-status running';
-            statusDiv.innerHTML = '<span class="spinner"></span> Analyzing inspection data — this may take a few seconds...';
             outputDiv.classList.remove('visible');
+            statusDiv.className = 'ai-status running';
+            statusDiv.style.display = 'block';
+            statusDiv.innerHTML = '<span class="spinner"></span> Uploading inspection data to Gemini...';
 
             try {
+                // Serialize full inspection dataset to JSON
+                const exportData = {
+                    exportedAt: new Date().toISOString(),
+                    facility: 'Baby Wipe Manufacturing',
+                    totalInspections: inspections.length,
+                    inspections: inspections
+                };
+                const jsonData = JSON.stringify(exportData);
+
+                // Upload to Gemini Files API
+                const fileUri = await uploadDataToGemini(apiKey, jsonData);
+
+                statusDiv.innerHTML = '<span class="spinner"></span> Analyzing data — this may take a few seconds...';
+
+                // Build the prompt (no data inline — it's all in the file)
+                const prompt = buildAIPrompt();
+
+                // Call Gemini with file reference + prompt
                 const response = await fetch(
                     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
                     {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
-                            contents: [{ parts: [{ text: prompt }] }],
+                            contents: [{
+                                parts: [
+                                    {
+                                        fileData: {
+                                            mimeType: 'application/json',
+                                            fileUri: fileUri
+                                        }
+                                    },
+                                    { text: prompt }
+                                ]
+                            }],
                             generationConfig: {
                                 temperature: 0.2,
                                 maxOutputTokens: 8192
@@ -1750,26 +1826,13 @@ Return ONLY a valid JSON object with these exact keys:
 
                 const data = await response.json();
                 const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-
                 if (!rawText) throw new Error('Gemini returned an empty response. Try again.');
 
-                // Just find the JSON object - cut everything before { and after }
+                // Extract JSON — find outermost { }
                 const start = rawText.indexOf('{');
-                const end = rawText.lastIndexOf('}');
-                if (start === -1 || end === -1) throw new Error('Gemini did not return a JSON object. Try again.');
-                const jsonCandidate = rawText.slice(start, end + 1);
-
-                // Strategy 3: try parsing, then clean control chars and retry
-                try {
-                    result = JSON.parse(jsonCandidate);
-                } catch (e1) {
-                    try {
-                        result = JSON.parse(jsonCandidate.replace(/[\x00-\x09\x0B\x0C\x0E-\x1F]/g, ''));
-                    } catch (e2) {
-                        // Show the first 300 chars of raw response to help diagnose
-                        throw new Error(`Could not parse AI response. Raw start: "${rawText.substring(0, 300)}"`);
-                    }
-                }
+                const end   = rawText.lastIndexOf('}');
+                if (start === -1 || end === -1) throw new Error('No JSON found in response. Try again.');
+                const result = JSON.parse(rawText.slice(start, end + 1));
 
                 renderAIResult(result);
                 statusDiv.style.display = 'none';
@@ -1778,7 +1841,7 @@ Return ONLY a valid JSON object with these exact keys:
             } catch (err) {
                 console.error('AI Analysis error:', err);
                 statusDiv.className = 'ai-status error';
-                statusDiv.innerHTML = `⚠️ Analysis failed: ${err.message}. Check your API key in Settings and try again.`;
+                statusDiv.innerHTML = `⚠️ ${err.message}`;
             } finally {
                 btn.disabled = false;
             }

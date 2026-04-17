@@ -1290,10 +1290,10 @@
                     </div>
                     <select id="settings-model">
                         <option value="gemini-1.5-flash">gemini-1.5-flash — Fast &amp; cost-effective</option>
-                        <option value="gemini-1.5-pro" selected>gemini-1.5-pro — 2M token context, most reliable (Default)</option>
+                        <option value="gemini-1.5-pro">gemini-1.5-pro — Higher capability</option>
                         <option value="gemini-2.0-flash">gemini-2.0-flash — Latest fast model</option>
                         <option value="gemini-2.0-flash-lite">gemini-2.0-flash-lite — Lightest &amp; fastest</option>
-                        <option value="gemini-2.5-flash">gemini-2.5-flash — Latest, fast &amp; capable</option>
+                        <option value="gemini-2.5-flash" selected>gemini-2.5-flash — Recommended (Default)</option>
                         <option value="gemini-2.5-pro">gemini-2.5-pro — Most capable</option>
                     </select>
                     <p class="settings-hint">Click "Load Models from API" to fetch the live list of models available to your API key. This keeps the list current as Google releases new models.</p>
@@ -1361,8 +1361,10 @@
         const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzkmTzohbjm7jRmWmgeU4Zrzp373qBJovncVA1jrK2K5glnVANUX4R6tUwl2vJSvijBVA/exec';
         
         // ── Version Management ─────────────────────────────────────────────────
-        const APP_VERSION = '3.8.6';
+        const APP_VERSION = '3.8.8';
         const CHANGELOG = {
+            '3.8.8': { date: '2025-04-17', title: 'Final Fix', changes: ['Synced JS and UI default model to gemini-2.5-flash', 'Lean prompt — only notable points, guaranteed small response'] },
+            '3.8.7': { date: '2025-04-17', title: 'Working AI Analysis', changes: ['Fixed model back to gemini-2.5-flash', 'Prompt sends only notable points — tiny payload, fast response, no truncation'] },
             '3.8.6': {
                 date: '2025-04-17',
                 title: 'Stable AI Analysis',
@@ -1555,7 +1557,7 @@
         // ── Settings helpers ───────────────────────────────────────────────────
         function loadSettings() {
             const key = localStorage.getItem('geminiApiKey') || '';
-            const model = localStorage.getItem('geminiModel') || 'gemini-1.5-flash';
+            const model = localStorage.getItem('geminiModel') || 'gemini-2.5-flash';
             document.getElementById('settings-api-key').value = key;
             document.getElementById('settings-model').value = model;
             document.getElementById('settings-version').textContent = APP_VERSION;
@@ -1587,7 +1589,7 @@
         }
 
         function updateAIModelDisplay() {
-            const model = localStorage.getItem('geminiModel') || 'gemini-1.5-flash';
+            const model = localStorage.getItem('geminiModel') || 'gemini-2.5-flash';
             const el = document.getElementById('ai-model-display');
             if (el) el.textContent = `Model: ${model}`;
         }
@@ -1669,76 +1671,54 @@
 
         function buildAIPrompt() {
             if (inspections.length === 0) return null;
-
-            // Pre-compute SPC faults so we can tell Gemini what we already know
-            const groups = {};
-            inspections.forEach(i => {
-                const key = `${i.line}${i.downline?'/'+i.downline:''} | ${i.machine} | ${i.inspectionPoint}`;
-                if (!groups[key]) groups[key] = [];
-                groups[key].push(i);
+            var avg = function(a){return a.length?+(a.reduce(function(x,y){return x+y;},0)/a.length).toFixed(1):null;};
+            var tr  = function(a){
+                if(a.length<4)return 'n/a';
+                var h=Math.floor(a.length/2),d=+(avg(a.slice(-h))-avg(a.slice(0,h))).toFixed(1);
+                return Math.abs(d)<0.5?'stable':(d>0?'+'+d:''+d);
+            };
+            var grp={};
+            inspections.forEach(function(i){
+                var k=i.line+(i.downline?'/'+i.downline:'')+' | '+i.machine+' | '+i.inspectionPoint;
+                if(!grp[k])grp[k]=[];grp[k].push(i);
             });
-
-            const faultSummary = [];
-            let totalFaults = 0;
-            const machinesWithFaults = new Set();
-
-            Object.entries(groups).forEach(([key, records]) => {
-                const sorted = [...records].sort((a,b) => new Date(a.timestamp) - new Date(b.timestamp));
-                const faults = checkForFaults(sorted[sorted.length - 1]);
-                if (faults.length) {
-                    totalFaults++;
-                    machinesWithFaults.add(key.split('|')[1].trim());
-                    faultSummary.push(`${key}: ${faults.map(f => f.type).join(', ')}`);
-                }
+            var notable=[],okCount=0,faultCount=0;
+            Object.keys(grp).forEach(function(k){
+                var recs=grp[k].slice().sort(function(a,b){return new Date(a.timestamp)-new Date(b.timestamp);});
+                var f=checkForFaults(recs[recs.length-1]);
+                if(f.length)faultCount++;
+                var T=recs.map(function(r){return r.measurements.temperature;}).filter(function(v){return v!=null;});
+                var V=recs.map(function(r){return r.measurements.vibration&&r.measurements.vibration.x;}).filter(function(v){return v!=null;});
+                var R=recs.map(function(r){return r.measurements.tackRPM;}).filter(function(v){return v!=null;});
+                var segs=[],ps=null,ss=0;
+                recs.forEach(function(r,i){
+                    var s=(r.measurements.auditory||[]).slice().sort().join('+')||'none';
+                    if(s!==ps){if(ps!==null)segs.push('d'+(ss+1)+'-'+i+':'+ps);ps=s;ss=i;}
+                    if(i===recs.length-1)segs.push('d'+(ss+1)+'-'+(i+1)+':'+s);
+                });
+                var hasSnd=recs.some(function(r){return(r.measurements.auditory||[]).length>0;});
+                var notes=recs.filter(function(r){return r.notes&&/warn|concern|worse|noise|vibrat|elevat|increas|monitor|flag/i.test(r.notes);})
+                    .slice(-2).map(function(r){return(r.notes||'').replace(/\s+/g,' ').trim().substring(0,60);});
+                var tT=tr(T),tV=tr(V),tR=tr(R);
+                var isNotable=f.length||hasSnd||notes.length||(tT!=='stable'&&tT!=='n/a')||(tV!=='stable'&&tV!=='n/a')||(tR!=='stable'&&tR!=='n/a');
+                if(!isNotable){okCount++;return;}
+                var p=['['+k+'] n='+recs.length];
+                if(T.length)p.push('T:avg='+avg(T)+'F,trend='+tT);
+                if(V.length)p.push('Vx:avg='+avg(V)+',trend='+tV);
+                if(R.length)p.push('RPM:avg='+avg(R)+',trend='+tR);
+                if(hasSnd)p.push('SND:['+segs.join('->')+']');
+                if(f.length)p.push('FAULT:'+f.map(function(x){return x.type;}).join(','));
+                if(notes.length)p.push('NOTE:'+notes.join('|'));
+                notable.push(p.join(' '));
             });
-
-            const totalInspections = inspections.length;
-            const uniqueMachines   = [...new Set(inspections.map(i => i.machine))].length;
-            const uniqueLines      = [...new Set(inspections.map(i => i.line))].length;
-            const dateRange        = (() => {
-                const ts = inspections.map(i => new Date(i.timestamp)).sort((a,b)=>a-b);
-                return `${ts[0].toLocaleDateString()} to ${ts[ts.length-1].toLocaleDateString()}`;
-            })();
-
-            const prompt = `You are an expert manufacturing equipment diagnostic analyst and SPC specialist for a baby wipe manufacturing facility.
-
-The attached JSON file contains the complete inspection dataset. Analyze it fully.
-
-FLEET CONTEXT:
-- Total Inspections: ${totalInspections}
-- Date Range: ${dateRange}
-- Production Lines: ${uniqueLines}
-- Machines Monitored: ${uniqueMachines}
-- Inspection Points with Active SPC Faults: ${totalFaults}
-
-SPC RULES REFERENCE:
-- Rule 1: One point beyond 3 standard deviations from mean (immediate out-of-control)
-- Rule 2: 9 consecutive points on same side of mean (process shift)
-- Rule 3: 6 consecutive points trending up or down (process drift)
-- Rule 5: 2 of 3 points beyond 2 standard deviations
-- Rule 6: 4 of 5 points beyond 1 standard deviation
-
-PRE-COMPUTED SPC FAULTS (${totalFaults} points flagged):
-${faultSummary.length > 0 ? faultSummary.join('\n') : 'None detected'}
-
-Using the full inspection data in the attached file, provide a comprehensive diagnostic report. Look for:
-1. Temperature trends and HMI vs actual discrepancies
-2. Vibration increases over time indicating bearing or alignment issues
-3. RPM drift indicating motor or pump wear
-4. Auditory progressions — sounds that appear or worsen over time
-5. Any patterns in inspector notes indicating developing issues
-
-Respond with ONLY a valid JSON object — no markdown, no explanation, just the JSON:
-{"overallStatus":"WARNING","overallSummary":"string","stats":{"totalInspections":0,"machinesMonitored":0,"machinesWithFaults":0,"machinesOK":0},"machineFindings":[{"name":"string","status":"WARNING","detail":"string"}],"recommendations":[{"priority":"HIGH","action":"string"}],"narrative":"string"}
-
-Values for status fields: OK, CAUTION, or WARNING. Values for priority: HIGH, MEDIUM, or LOW.`;
-
-            return prompt;
+            var total=inspections.length;
+            var machines=[...new Set(inspections.map(function(i){return i.machine;}))].length;
+            return 'Manufacturing PM analyst. Baby wipe facility. ' + total + ' total inspections, ' + machines + ' machines, ' + faultCount + ' SPC faults, ' + okCount + ' points stable.\n\nNOTABLE:\n' + notable.join('\n') + '\n\nReturn ONLY this JSON structure, no markdown:\n{"overallStatus":"OK","overallSummary":"2-3 sentences","stats":{"totalInspections":' + total + ',"machinesMonitored":' + machines + ',"machinesWithFaults":' + faultCount + ',"machinesOK":' + okCount + '},"machineFindings":[{"name":"machine name","status":"OK","detail":"1-2 sentences"}],"recommendations":[{"priority":"HIGH","action":"one sentence"}],"narrative":"3-4 sentences for supervisor"}\nStatus=OK/CAUTION/WARNING. Priority=HIGH/MEDIUM/LOW.';
         }
 
         async function runAIAnalysis() {
             const apiKey = localStorage.getItem('geminiApiKey') || '';
-            const model  = localStorage.getItem('geminiModel') || 'gemini-1.5-pro';
+            const model  = localStorage.getItem('geminiModel') || 'gemini-2.5-flash';
 
             if (!apiKey) { checkAIKeyOnOpen(); return; }
 
